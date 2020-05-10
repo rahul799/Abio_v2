@@ -1,596 +1,519 @@
-#Sys.setenv("plotly_username"=" your_plotly_username")
-#Sys.setenv("plotly_api_key"="your_api_key")
-## test repo
+library(corrplot)
+library(igraph)
+library(ggraph)
+library(statmod)
+library(RColorBrewer)
+library(ggplot2)
+library(corrplot)
+library(entropy)
+library(moments)
+library(tibble)
+library(dplyr)
+library(circlize)
+library(actuar)
+library(fitdistrplus)
+library(LSD)
+library(DT)
+library(enrichR)
+library(matrixStats)
 
-print("start loading")
-start.load <- Sys.time()   ### time
 
-if(length(find.package(package = 'shiny',quiet = T))>0){
-  library(shiny)
-}else{
-  print("Package shiny not installed")
-  install.packages("shiny")
-  print("Package shiny installed")
-  library(shiny)
+library(BiocManager)
+library(BiocGenerics)
+library(BiocParallel)
+library(Biostrings)
+library(RUVSeq)
+library(edgeR)
+library(DESeq2)
+library(NOISeq)
+library(NBPSeq)
+library(AnnotationForge)
+library(GOstats)
+library(Biobase)
+library(org.Hs.eg.db)
+library(ComplexHeatmap)
+library(org.Hs.eg.db)
+library(org.Sc.sgd.db)
+library(org.EcK12.eg.db)
+library(org.Mm.eg.db)
+library(org.Rn.eg.db)
+library(org.Gg.eg.db)
+library(org.Dr.eg.db)
+library(org.Dm.eg.db)
+library(org.Ce.eg.db)
+library(org.Ag.eg.db)
+library(org.At.tair.db)
+library(org.Cf.eg.db)
+library(org.Bt.eg.db)
+library(org.EcSakai.eg.db)
+library(org.Mmu.eg.db)
+library(org.Pf.plasmo.db)
+library(org.Pt.eg.db)
+library(org.Ss.eg.db)
+library(org.Xl.eg.db)
+library(clusterProfiler)
+library(DOSE)
+library(AnnotationDbi)
+
+
+library(Category)
+library(DelayedArray)
+library(EDASeq)
+library(GenomeInfoDb)
+library(GenomicAlignments)
+library(GenomicRanges)
+library(graph)
+library(IRanges)
+library(limma)
+library(lsei)
+library(npsurv)
+library(Rsamtools)
+library(S4Vectors)
+library(ShortRead)
+library(SummarizedExperiment)
+library(XVector)
+
+
+
+#########################################################
+########################UTILS-START###########################
+#################################################################
+
+
+######## FOR NORMALIZATION ##################
+############################################
+RUVg.apply <- function(raw_counts, spikes){
+  # f = list of types
+  
+  set <- newSeqExpressionSet(as.matrix(raw_counts))
+  # upper-quartile normalization by EDASeq
+  set <- betweenLaneNormalization(set, which="upper")
+  if(! is.null(spikes) ) {
+    spikes <- intersect(spikes,rownames(raw_counts))
+    set1 <- RUVg(set, spikes, k=1) # spikes = negative control genes
+    return(set1)
+  } else {
+    return(set)
+  }
+}
+
+getEmpirical <- function(raw_counts,f){
+  # filter data by at least 1 value with >0 counts for each gene
+  filter <- apply(raw_counts, 1, function(x) length(x[x>0])>=2)
+  filtered <- raw_counts[filter,]
+  set <- newSeqExpressionSet(as.matrix(filtered), phenoData = data.frame(f, row.names=colnames(raw_counts)))
+  
+  design <- model.matrix(~f, data=pData(set))
+  y <- DGEList(counts=counts(set), group=f)
+  y <- calcNormFactors(y, method="upperquartile")
+  y <- estimateGLMCommonDisp(y, design)
+  y <- estimateGLMTagwiseDisp(y, design)
+  fit <- glmFit(y, design)
+  lrt <- glmLRT(fit, coef=2)
+  top <- topTags(lrt, n=nrow(set))$table
+  n_row <- nrow(filtered)
+  empirical <- rownames(set)[which(!(rownames(set) %in% rownames(top)[1:round(0.2*n_row)]))]
+  # set2 <- RUVg(set, empirical, k=1)
+  return(empirical)
+}
+
+tpm<- function(counts, lengths){
+  rate <- counts/lengths
+  tpm <- rate/sum(rate) * 1e6
+  return (tpm)
+}
+
+fpkm <- function(counts,lengths){
+  rate <- counts/lengths
+  fpkm <- rate/sum(counts) * 1e9
+}
+######### FOR DE ANALYSIS #######################3
+#################################################3
+
+edgerApply <- function(DS,f,W_1=NULL,f1,f2){
+  # W_1 calculated by RUVg with spikes (negative control genes)
+  if(length(W_1) != length(f))
+    W_1 <- NULL
+  y0 <- DGEList(counts=as.matrix(DS), group=f)
+  # keep <- rowSums(cpm(y0)>2) >= 0.25*ncol(DS)
+  # y0 <- y0[keep, , keep.lib.sizes=FALSE]
+  
+  if(!is.null(W_1)){
+    y <- calcNormFactors(y0, method = "upperquartile")
+    ref <- data.frame("f"=f,"W_1"= W_1)
+    rownames(ref) <- colnames(DS)
+    design <- model.matrix(~0+f+W_1, data=ref); colnames(design) <- c(levels(f),"W_1")
+    y.disp <- estimateGLMCommonDisp(y,design)
+    y.disp <- estimateGLMTagwiseDisp(y.disp,design)
+    # fit <- glmQLFit(y.disp, design, robust=TRUE)   # glmQLFTest
+    fit <- glmFit(y.disp,design)
+  } else{
+    y <- calcNormFactors(y0)
+    design <- model.matrix(~0+f); colnames(design) <- levels(f)
+    y.disp <- estimateDisp(y, design, robust=TRUE)
+    fit <- glmFit(y.disp,design)
+  }
+  crt <- makeContrasts(contrasts=paste(f2,f1,sep="-"),levels=design)
+  lrt <- glmLRT(fit, contrast=crt)
+  res <- topTags(lrt,n=nrow(y0$counts)) #$table
+  # print("res")
+  # print(head(res$table))
+  return(res)
+}
+
+edgerFilter <- function(res, FC=2, p_val=0.05){
+  # res = result object from edger
+  res <- res$table
+  colnames(res)[colnames(res)=="logFC"] <- "log2FC"
+  res$log2FCabs <- abs(res$log2FC)
+  # padj.na <- is.na(res$FDR);  res$FDR[padj.na] <- res$PValue[padj.na] # replace NA of padj by pval
+  res <- res %>% rownames_to_column('Gene')
+  res.cutoff <- filter(res, log2FCabs >= log2(FC), FDR <= p_val)
+  return(res.cutoff)
+}
+
+deseqApply <- function(DS,f.df,W_1=NULL,f1,f2) {
+  # W_1 calculated by RUVg with spikes (negative control genes)
+  if(length(W_1) != nrow(f.df))
+    W_1 <- NULL
+  colnames(f.df) <- "f"
+  f <- f.df[,1]
+  # aa <- ncol(DS);  keep <- apply(DS, 1, function(x) length(x[x>2])>=aa)  # filtering
+  DS_filt <- DS #[keep,]
+  if(! is.null(W_1)){
+    f.df$W_1 <- W_1
+    dds <- DESeq2::DESeqDataSetFromMatrix(countData = as.matrix(DS_filt),   # data frame or matrix
+                                          colData = f.df,
+                                          design = ~ W_1+f)
+  } else {
+    dds <- DESeq2::DESeqDataSetFromMatrix(countData = as.matrix(DS_filt),   # data frame or matrix
+                                          colData = f.df,
+                                          design = ~ f)
+  }
+  ddsDE <- DESeq(dds)
+  # print("from deseqApply"); 
+  # print("W_1"); print(W_1)
+  # print("dds.DE") ;print(head(ddsDE))
+  res <- results(ddsDE,contrast=c("f",f2,f1))
+  # print("from deseqApply"); 
+  # print(res)
+  return(res)
+}
+
+deseqFilter <- function(res,FC=2,p_val=0.05){
+  # res = result from deseqApply
+  res <- as.data.frame(res)
+  res$log2FCabs <- abs(res$log2FoldChange)
+  # padj.na <- is.na(res$padj);  res$padj[padj.na] <- res$pvalue[padj.na] # replace NA of padj by pval
+  res <- res %>% rownames_to_column('Gene')
+  res.cutoff <- filter(res, log2FCabs >= log2(FC), padj <= p_val)
+  colnames(res.cutoff)[colnames(res.cutoff)%in%c("log2FoldChange","pvalue","padj")] <- c("log2FC","PValue","FDR")
+  # res.cutoff2 <- res.cutoff[,c("log2FoldChange","pvalue","padj","log2FCabs")]
+  # colnames(res.cutoff2) <- c("log2FC","PValue","FDR","log2FCabs")
+  return(res.cutoff)
+}
+
+noiseqbioApply <- function(DS,f.df,f1,f2){
+  # DS MUST be normalized before hand
+  # DS <- df_raw_shiny
+  # DS <- df_shiny
+  # make sure rownames(f) = colnames(DS)
+  colnames(f.df) <- "f"
+  mydata <- NOISeq::readData(data = DS, factors = f.df)
+  
+  #noiseqbio or noiseq. if noiseq, q value cut off should be 0.8 
+  mynoiseqbio = noiseqbio(mydata, conditions=c(f1,f2), k = 0.5, norm = "n",factor = "f", lc = 1, r = 20,
+                          adj = 1.5, plot = FALSE, a0per = 0.9, random.seed = 12345, filter = 1)
+  # q = 1- pvalue
+  mynoiseqbio.deg = degenes(mynoiseqbio, q = 0.95, M = NULL)  # data frame format; log2FC; volvano plot
+  return(mynoiseqbio)
+}
+
+noiseqbioFilter <- function(mynoiseqbio, FC=2, p_val=0.05){
+  mynoiseqbio.deg = degenes(mynoiseqbio, q = 0, M = NULL) # q = 1-p_val
+  mynoiseqbio.deg$log2FCabs <- abs(mynoiseqbio.deg$log2FC)
+  mynoiseqbio.deg <- mynoiseqbio.deg %>% rownames_to_column('Gene')
+  # mynoiseqbio.deg <- filter(mynoiseqbio.deg, log2FCabs >= log2(FC))
+  mynoiseqbio.deg$FDR <- 1-mynoiseqbio.deg$prob
+  return(mynoiseqbio.deg)
+}
+
+noiseqsimApply <- function(DS,f.df,f1,f2){
+  # DS MUST be normalized before hand
+  # DS <- df_raw_shiny
+  # DS <- df_shiny
+  # make sure rownames(f) = colnames(DS)
+  colnames(f.df) <- "f"
+  mydata <- NOISeq::readData(data = DS, factors = f.df)
+  
+  mynoiseq <- noiseq(mydata, conditions=c(f1,f2), factor = "f", k = 0.5, norm = "n", pnr = 0.2,
+                     nss = 5, v = 0.02, lc = 1, replicates = "no")
+  # mynoiseq.deg = degenes(mynoiseq, q = 0.9, M = NULL)  # data frame format; M; no vocalno
+  return(mynoiseq)
+}
+
+noiseqsimFilter <- function(mynoiseq, FC=2){
+  mynoiseq.deg = NOISeq::degenes(mynoiseq, q = 0, M = NULL) # q=0.8
+  mynoiseq.deg$log2FCabs <- abs(mynoiseq.deg$M)
+  mynoiseq.deg <- mynoiseq.deg %>% rownames_to_column('Gene')
+  # mynoiseq.deg <- filter(mynoiseq.deg, log2FCabs >= log2(FC))
+  mynoiseq.deg$FDR <- 1-mynoiseq.deg$prob
+  return(mynoiseq.deg)
+}
+
+# fold change between any 2 columns, no statistics involved
+deWithoutStats <- function(DS, FC=2, n_col=1){
+  if (n_col < 2) n_col <- 2
+  if (n_col > ncol(DS) ) n_col <- ncol(DS)-1
+  keep <- apply(DS, 1, function(row) all(row > 0 ))   # all values must be > 0
+  DS <- DS[keep,]
+  fcmatrix <- DS; fcmatrix[,]=0; # rownames(fcmatrix) <- rownames(DS)
+  for(i in 1:ncol(DS)){
+    col_i_matrix <- matrix(rep(DS[,i], ncol(DS)),byrow = F)
+    temp <- DS/col_i_matrix
+    fcmatrix <- fcmatrix + (temp >= FC)
+  }
+  genes <- rownames(fcmatrix[rowSums(fcmatrix) >= n_col,])
+  return(DS[genes,])
+}
+
+edgerDisp <- function(DS, f,...){
+  y0 <- DGEList(counts=as.matrix(DS), group=f)
+  keep <- rowSums(cpm(y0)>2) >= 0.25*ncol(DS)
+  y0 <- y0[keep, , keep.lib.sizes=FALSE]
+  y <- calcNormFactors(y0)
+  
+  design <- model.matrix(~f)
+  y.disp <- estimateDisp(y, design, robust=TRUE)
+  # plotBCV(y.disp)
+  fit <- glmQLFit(y.disp, design, robust=TRUE)
+  plotQLDisp(fit,...)
+  # return(fit)
+}
+
+deseqDisp <- function(DS,f.df,...){
+  colnames(f.df) <- "f"
+  f <- f.df[,1]
+  aa <- ncol(DS)
+  keep <- apply(DS, 1, function(x) length(x[x>2])>=aa)
+  DS_filt <- DS[keep,]
+  dds <- DESeq2::DESeqDataSetFromMatrix(countData = as.matrix(DS_filt),   # data frame or matrix
+                                        colData = f.df,
+                                        design = ~ f)
+  # plotDispEsts(dds)
+  # dds_disp <- DESeq(dds, test="LRT", reduced=~1)
+  dds_disp <- DESeq(dds)
+  plotDispEsts(dds_disp,...)
 }
 
 
-if(length(find.package(package = 'shinythemes',quiet = T))>0){
-  library(shinythemes)
-}else{
-  print("Package shinythemes not installed")
-  install.packages("shinythemes")
-  print("Package shinythemes installed")
-  library(shinythemes)
+
+########## heatmap #############
+
+
+
+############ GO ANALYSIS ##################
+############################################
+goPrep <- function(fg,bg,keyType,orgDb){
+  # bg = background genes/ reference genes/ gene universe
+  # fg = foreground genes = DE genes to enrichment test
+  # orgDb = org.EcK12.eg.db (eg)
+  # keyType = "ENTREZID", "SYMBOL", etc...
+  all_genes <- keys(orgDb, keytype = keyType)
+  # all_genes_entrez <- keys(orgDb, keytype = "ENTREZID")
+  if(! any(fg %in% all_genes)){
+    showModal(modalDialog(
+      title = "Error","Input DE genes and identifier not matched. Please re-select the identifier and try again!"
+    ))
+    return (NULL)
+  }
+  
+  if(is.null(bg)){
+    bg_mapped <- all_genes
+  } else{
+    bg_mapped <- bg[bg%in%all_genes]
+  }
+  fg_mapped <- fg[fg%in%bg_mapped]
+  fg_unmapped <- fg[!fg%in%bg_mapped]
+  return(list(fg_mapped, bg_mapped, fg_unmapped))
 }
 
-if(length(find.package(package = 'rstudioapi',quiet = T))>0){
-  library(rstudioapi)
-}else{
-  install.packages("rstudioapi")
-  library(rstudioapi)
+enrichrApply <- function(gene_list,dbs,min_no=1){
+  res <- enrichr(gene_list, dbs)[[1]]
+  res$Count <- sapply(res$Genes,length)  # convert to Count
+  # res <- filter(res, Count >= min_no)
+  return(res) # have Count
 }
 
-wd <- dirname(rstudioapi::getActiveDocumentContext()$path)  #set wd as the current folder
-print(wd == getwd())
-print(wd)
-print(getwd())
-if(! wd == getwd()){
-  setwd(wd)
+enrichgoApply <- function(gene_list, keyType, orgDb,ont="BP",simpl=F,pvalueCutoff=0.01, qvalueCutoff=0.01) {
+  ego <- tryCatch({
+    ego <- enrichGO(gene          = gene_list,
+                    keyType       = keyType, # SYMBOL
+                    OrgDb         = orgDb, # org.EcK12.eg.db,
+                    ont           = ont,
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = pvalueCutoff,
+                    qvalueCutoff  = qvalueCutoff) 
+    return(ego) 
+  }, error = function(e){
+    message("error occurs in clusterProfiler::enrichgo")
+    message("msg from line 278 utils")
+    return(NULL)
+  }, finally={
+    message("Trycatch for clusterProfiler::enrichgo, msg from line 294 utils")
+  }
+  )
+  
+  if(is.null(ego) ){
+    return(NULL)
+  } else {
+    if(simpl == T){
+      ego <- simplify(ego, cutoff=0.8, by="p.adjust", select_fun=min)
+    }
+    return(as.data.frame(ego)) # have Count  
+  }
 }
 
-# 
-# ## sourcing util files
-source(paste0("./www/utils.R"))
-# source("ui.R")
-# 
-loadPkg()
+gostatsApply <- function(fg_mapped,bg_mapped,keyType,orgDb,ont="BP",primary_id="ENTREZID",pvalueCutoff=0.01){
+  # bg_mapped = background genes
+  # fg_mapped = foreground genes
+  
+  if(keyType != primary_id){
+    bg_mapped <- mapIds(orgDb,bg_mapped,primary_id,keyType)
+    bg_mapped <- bg_mapped[!is.na(bg_mapped)]
+    fg_mapped <- mapIds(orgDb,fg_mapped,primary_id,keyType)
+    fg_mapped <- fg_mapped[!is.na(fg_mapped)]
+  }
+  
+  hgCutoff <- 0.01
+  df <- tryCatch({
+    params <- new("GOHyperGParams",
+                  geneIds=fg_mapped,
+                  universeGeneIds=bg_mapped,
+                  annotation=orgDb,
+                  ontology=ont,
+                  pvalueCutoff=pvalueCutoff,
+                  conditional=FALSE,
+                  testDirection="over")
+    hgOver <- hyperGTest(params)
+    summary(hgOver)
+  }, error = function(e) {
+    cat("Error: ",e$message, "\n")
+    return(NULL)
+  }, finally = {
+    message("gostatsApply error handler")
+  })
+  return(df)  # have Count
+}
+
+
+#### GO VISUALIZATION ###
+
+goToList <- function(go) {
+  # convert GO enrichment result (df) to list, with name being GO description, elements being gene ID
+  llist <- list()
+  for(i in 1:nrow(go)){
+    nname <- as.character(go$Description)[i]
+    gg <- strsplit(as.character(go$geneID[i]),split="/")
+    llist[[nname]] <- unlist(gg)
+  }
+  return(llist)
+}
+
+
+graphGene <- function(geneSets,group.name){
+  # geneSets = named list of genes with name = name of go term
+  showCategory = 5; foldChange   = NULL;
+  layout = "kk"; colorEdge = FALSE;
+  circular = FALSE; node_label = TRUE
+  
+  g <- list2graph(geneSets)  
+  size <- sapply(geneSets, length)
+  V(g)$size <- 1
+  n <- length(geneSets)
+  V(g)$size[1:n] <- size
+  
+  igraph::V(g)$color <- "#B3B3B3"  # gene nodes color
+  igraph::V(g)$color[1:n] <- makeColorBrewer(n) # distinctColorPalette(n)  # "#E5C494"  # bio process color
+  if(n == 1) {igraph::V(g)$color[1] <- "#E5C494"}
+  
+  hubs <- V(g)$name[1:n]   #names(geneSets); 
+  cols <- igraph::V(g)$color; names(cols) <- "genes"; names(cols)[1:n] <- hubs; 
+  
+  V(g)$name[1:n] <- " "  #remove labels in the GO processes to avoid confusion
+  
+  edge_layer <- geom_edge_link(alpha=.8, colour='darkgrey') # edge color
+  p <- ggraph(g, layout=layout, circular=circular) +
+    edge_layer +
+    geom_node_point(aes_(color=~I(color), size=~size), show.legend = T) +
+    theme_void()
+  #  geom_node_text(aes_(label=~name), repel=TRUE) # add labels for node
+  
+  # p <- p + scale_size(range=c(3, 10), breaks=unique(round(seq(min(size), max(size), length.out=4)))) 
+  
+  # add labels for biological process hubs
+  p <- p +  scale_size(range=c(3, 10),breaks=V(g)$size[1:n],name=NULL,
+                       labels=names(cols)[1:n],
+                       guide=guide_legend(override.aes=list(color=cols[1:n]))) +
+    labs(subtitle = paste(length(unique(unlist(geneSets))),"genes"))
+  
+  if(!missing(group.name)) p <- p + ggtitle(group.name)
+  
+  return( list(p, g) )
+}
+
+makeColorBrewer <- function(n,name = "Set3"){
+  require(RColorBrewer)
+  max_n <- brewer.pal.info[rownames(brewer.pal.info)==name,"maxcolors"]
+  if (n <= max_n){
+    cols <- brewer.pal(n,name)
+  } else {
+    col1 <- brewer.pal(max_n,name)
+    cols <- rep(col1, floor(n/max_n))
+    cols <- c(cols, col1[1:(n%%max_n)])
+  }
+  return(cols)
+}
+
+list2graph <- function(inputList) {
+  x <- list2df(inputList)
+  g <- graph.data.frame(x, directed=FALSE)
+  return(g)
+}
+
+
+list2df <- function(inputList) {
+  ldf <- lapply(1:length(inputList), function(i) {
+    data.frame(categoryID=rep(names(inputList[i]),
+                              length(inputList[[i]])),
+               Gene=inputList[[i]])
+  })
+  
+  do.call('rbind', ldf)
+}
+
+havingIP <- function() {
+  if (.Platform$OS.type == "windows") {
+    ipmessage <- system("ipconfig", intern = TRUE)
+  } else {
+    ipmessage <- system("ifconfig", intern = TRUE)
+  }
+  validIP <- "((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)[.]){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+  any(grep(validIP, ipmessage))
+}
+
+
+#########################################################
+########################UTILS-OVER###########################
+#################################################################
+
+
 
 species.choices <<- c("Homo sapiens"='org.Hs.eg.db',"Mus musculus"='org.Mm.eg.db',"Rattus norvegicus"='org.Rn.eg.db',"Gallus gallus"='org.Gg.eg.db',"Danio rerio"='org.Dr.eg.db',"Drosophila melanogaster"='org.Dm.eg.db',"Caenorhabditis elegans"='org.Ce.eg.db',"Saccharomyces cereviasiae"='org.Sc.sgd.db',"Arabidopsis thaliana"='org.At.tair.db',"Escherichia coli (strain K12)"='org.EcK12.eg.db',"Escherichia coli (strain Sakai)"='org.EcSakai.eg.db',"Anopheles gambiae"='org.Ag.eg.db',"Bos taurus"='org.Bt.eg.db',"Canis familiaris"='org.Cf.eg.db',"Macaca mulatta"='org.Mmu.eg.db',"Plasmodium falciparum"='org.Pf.plasmo.db',"Pan troglodytes"='org.Pt.eg.db',"Sus scrofa"='org.Ss.eg.db',"Xenopus tropicalis"='org.Xl.eg.db')
 DBS <<- list('org.Hs.eg.db'=org.Hs.eg.db,'org.Mm.eg.db'=org.Mm.eg.db,'org.Rn.eg.db'=org.Rn.eg.db,"org.Gg.eg.db"=org.Gg.eg.db,"org.Dr.eg.db"=org.Dr.eg.db,"org.Dm.eg.db"=org.Dm.eg.db,"org.Ce.eg.db"=org.Ce.eg.db,"org.Sc.sgd.db"=org.Sc.sgd.db,"org.At.tair.db"=org.At.tair.db,"org.EcK12.eg.db"=org.EcK12.eg.db,"org.EcSakai.eg.db"=org.EcSakai.eg.db,"org.Ag.eg.db"=org.Ag.eg.db,"org.Bt.eg.db"=org.Bt.eg.db,"org.Cf.eg.db"=org.Cf.eg.db,"org.Mmu.eg.db"=org.Mmu.eg.db,"org.Pf.plasmo.db"=org.Pf.plasmo.db,"org.Pt.eg.db"=org.Pt.eg.db,"org.Ss.eg.db"=org.Ss.eg.db,"org.Xl.eg.db"=org.Xl.eg.db)
-enrichRdbs <- as.character(read.csv(paste0(wd,"/www/enrichRdbs.csv"))[,1])
 
-end.load <- Sys.time()
-print("loading time")
-print(end.load-start.load)
-##### UI from here ###########
-ui <- navbarPage(id = "navbar",
-  theme = shinytheme("flatly"),
-  title = 'ABioTrans',
-  tabPanel('Home',
-           # useShinyjs(),
-           sidebarPanel(
-             radioButtons('file_type',"Choose File Type",
-                          c('Raw file (read count)'='raw','Normalised file'='norm')),
-             conditionalPanel(
-               condition = "input.file_type=='raw'",  # raw
-               p("Example ",a("here", href="https://github.com/buithuytien/ABioTrans/blob/master/Test%20data/Eg_raw.png")),  # ADD EXAMPLE
-               fileInput('file1','Choose Raw Counts'),
-               # radioButtons('norm_method',"Normalisation method",
-               #              c('RPKM','FPKM','TPM')),
-               p("Example ",a("here", href = "https://github.com/buithuytien/ABioTrans/blob/master/Test%20data/Eg_gene_length.png")),  # ADD EXAMPLE
-               fileInput('length1','Choose Gene Length'), #gene id + length
-               p("Example ",a("here", href = "https://github.com/buithuytien/ABioTrans/blob/master/Test%20data/Eg_negative_control_genes.png")),  # ADD EXAMPLE
-               fileInput('spikes1','Choose Negative Control Genes')
-               # helpText("* Format requirement: CSV file. The first column contains gene names; the read counts of each genotype (conditions: wildtype, mutants, replicates, etc.) are in the following columns.Each genotype column should have a column name. ")
-             ),
-             conditionalPanel(
-               condition = "input.file_type=='norm'", # normalized
-               p("Example ",a("here", href = "https://github.com/buithuytien/ABioTrans/blob/master/Test%20data/Eg_normalised.png")),  # ADD EXAMPLE
-               fileInput('file2','Choose Normalized Expression')
-               # helpText("* Format requirement: CSV file. Gene names in rows and genotypes in columns, following the usual format of files deposited in the GEO database.")
-             ),
-             p("Example ",a("here", href="https://github.com/buithuytien/ABioTrans/blob/master/Test%20data/Eg_metadata.png")),  # ADD EXAMPLE
-             fileInput('metafile1','Choose Meta Data File'),
-             actionButton("submit_input","Submit")
-           ),
-           mainPanel(
-             h3('Welcome to ABioTrans --'),
-             h3('A Biostatistical tool for Transcriptomics Analysis'),
-             img(src="Abiotrans-logo.png",
-                 width = 570,height = 370)
-           )
-  ),
-  tabPanel('Preprocessing',
-           sidebarPanel(
-             h4("Filtering"),
-             splitLayout(
-               numericInput("min_val","Min. value", min=0.1,step=0.1,value=1.0),
-               numericInput("min_col","Min. columns", min=1, value=2)
-             ),
-             conditionalPanel(
-               condition = "input.file_type=='raw'",
-               radioButtons('norm_method',"Normalisation method",
-                            c("None (Black)"="None",
-                              'RPKM (Blue)'='RPKM','FPKM (Dark cyan)'='FPKM',
-                              'TPM (Dark green)'='TPM',
-                              "RUV (Brown)"='RUV'))
-             ),
-             actionButton("submit_preprocessing","Submit"),
-             conditionalPanel(
-               condition = "input.preprocessing_tabs == 'Data table' ",
-               br(),
-               br(),
-               downloadButton("download_norm_data", "Download table (csv)")
-             )
-           ),
-           mainPanel(
-             tabsetPanel(type = "tabs",id="preprocessing_tabs",
-                         tabPanel("RLE plot",
-                                  conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                   div(img(src="load.gif",width=240,height=180),
-                                                       h4("Processing ... Please wait"),style="text-align: center;")
-                                  ), 
-                                  conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                   plotOutput("RLE.plot2")
-                                  ),
-                                  
-                                  conditionalPanel(
-                                    condition = "input.file_type=='raw'",
-                                    conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                     div(img(src="load.gif",width=240,height=180),
-                                                         h4("Processing ... Please wait"),style="text-align: center;")
-                                    ), 
-                                    conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                     plotOutput("RLE.plot")
-                                    )
-                                  )
-                         ),
-                         tabPanel("Data table",
-                                  h3("Normalized data"),
-                                  DT::dataTableOutput("norm_table")
-                         ),
-                         tabPanel("Description table",
-                                  h3("Data description"),
-                                  DT::dataTableOutput("meta_table")
-                         )
-             )
-           )
-  ),
-  tabPanel('    Scatter    ',
-           sidebarPanel(
-             selectInput(inputId = 'scatter.x',label = 'X-axis',choices = ""),
-             selectInput(inputId = 'scatter.y',label = 'Y-axis',choices = ""),
-             radioButtons('trans',"Transformation:",
-                          c('None','Natural log','log2','log10')),
-             downloadButton("downloadscatter", "Download as PDF"),
-             h6('Download all pairs of samples in one PDF (this may take some time to run) :'),
-             downloadButton("downloadscatter_collage","Download collage")),
-           mainPanel(
-             h3('Heatscatter'),
-             plotOutput('scatter.plot')
-           )),
-  tabPanel('Distribution Fit',
-           sidebarPanel(
-             conditionalPanel(
-               condition= "input.dist_tabs=='Distribution Fit'",
-               selectInput(inputId = 'dist.var',label = 'Choose a column',choices = colnames('dataset')),
-               checkboxGroupInput("distributions", "Distributions:",
-                                  choices = c("Log-normal","Log-logistic","Pareto","Burr","Weibull","Gamma"),selected = c("Log-normal","Pareto")),
-               radioButtons('dist_zoom',"Zoom to see fit",c('slider','text input')),
-               conditionalPanel(
-                 condition = "input.dist_zoom=='slider'",
-                 sliderInput("dist_range", "Range:",
-                             min = 0.1, max = 1000,step=1,
-                             value = c(0.1,1000))
-               ),
-               conditionalPanel(
-                 condition = "input.dist_zoom=='text input'",
-                 textOutput('dist_range_allowed'),
-                 numericInput('dist_range_min',"min",value=0.1,min=0.1,max=1000),
-                 numericInput('dist_range_max',"max",value=1000,min=0.1,max=1000)
-               ),
-               downloadButton("downloaddist", "Download as PDF")
-             ),
-             conditionalPanel(
-               condition = "input.dist_tabs=='AIC table'",
-               downloadButton("downloaddistaic", "Download as CSV")
-             )
-           ),
-           mainPanel(
-             tabsetPanel(type = "tabs",id="dist_tabs",
-                         tabPanel("Distribution Fit", plotOutput("dist.plot")),
-                         tabPanel("AIC table",
-                                  conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                   div(img(src="load.gif",width=240,height=180),
-                                                       h4("Processing ... Please wait"),style="text-align: center;")
-                                  ), 
-                                  conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                   div(tableOutput('dist.aic'), style = "font-size:80%")
-                                  ))
-             )
-           )),
-  tabPanel('  Correlation  ',
-           sidebarPanel(
-             radioButtons('cor_method',"Method:",
-                          c('Pearson correlation','Spearman correlation')),
-             conditionalPanel(
-               condition = "input.cor_tabs == 'Correlation heatmap'",
-               downloadButton("downloadcorrplot", "Download as PDF")
-             ),
-             conditionalPanel(
-               condition = "input.cor_tabs == 'Correlation plot'",
-               downloadButton("downloadcorrplot2", "Download as PDF")
-             ),
-             conditionalPanel(
-               condition = "input.cor_tabs == 'Correlation matrix'",
-               downloadButton("downloadcorrmat","Download as CSV")
-             )
-           ),
-           mainPanel(
-             conditionalPanel(
-               condition = "input.cor_method=='Pearson correlation'",
-               h3('Pearson correlation')
-             ),
-             conditionalPanel(
-               condition = "input.cor_method=='Spearman correlation'",
-               h3('Spearman correlation')
-             ),
-             tabsetPanel(type = "tabs",id="cor_tabs",
-                         tabPanel("Correlation heatmap", plotOutput('corr.plot')),
-                         tabPanel("Correlation plot", plotOutput('corr.plot2')),
-                         tabPanel("Correlation matrix", div(tableOutput('corr.matrix'), style = "font-size:80%"))
-             )
-           )
-  ),
-  tabPanel('PCA',
-           sidebarPanel(
-             conditionalPanel(
-               condition = "input.pca_tabs == 'PCA-2D plot'",
-               selectInput(inputId = 'pca.x',label = 'X-axis',choices = ""),
-               selectInput(inputId = 'pca.y',label = 'Y-axis',choices = "")
-             ),
-             selectInput(inputId = 'gene_size',label = 'Gene sample size',choices = ""),
-             radioButtons('gene_order',"Gene sample order (wrt column 1)",
-                          c('Descending (highest to lowest)'='Descending','Ascending (lowest to highest)'='Ascending','Random')),
-             conditionalPanel(
-               condition = "input.pca_tabs == 'PCA-2D plot' || input.pca_tabs == 'PCA-3D plot'",
-               checkboxInput('pca_cluster',strong('Kmeans clustering on columns'),FALSE),
-               conditionalPanel(
-                 condition = "input.pca_cluster == true",
-                 sliderInput("pca_cluster_num","Number of clusters:",value=1,min=1,max=1,step=1),
-                 checkboxInput('pca_text',strong('Display sample name'),FALSE)
-               )
-             ),
-             conditionalPanel(
-               condition = "input.gene_order=='Random'",
-               helpText('* Click multiple times to resample'),
-               actionButton('pca_refresh',"Resample",style="background-color: #337ab7;border-color:#337ab7"),
-               br(),br()
-             ),
-             conditionalPanel(
-               condition = "input.pca_tabs == 'PCA variance'",
-               downloadButton("downloadpcavar", "Download as PNG")
-             ),
-             conditionalPanel(
-               condition = "input.pca_tabs == 'PCA-2D plot'",
-               downloadButton("downloadpca2d","Download as PNG")
-             ),
-             conditionalPanel(
-               condition = "input.pca_tabs == 'PCA-3D plot'",
-               downloadButton("downloadpca3d","Download as PNG")
-             )
-           ),
-           mainPanel(
-             tabsetPanel(type = "tabs",id="pca_tabs",
-                         tabPanel("PCA variance", plotlyOutput("pcavar.plot")),
-                         tabPanel("PCA-2D plot", plotlyOutput("pca2d.plot")),
-                         tabPanel("PCA-3D plot",plotlyOutput("pca3d.plot"))
-             )
-           )),
-  tabPanel("DE Analysis",
-           # useShinyjs(),
-           sidebarPanel(
-             radioButtons("n_rep","Replicates?",choices=c("Multiple"=1,"Single"=0)),
-             conditionalPanel(
-               condition="input.n_rep=='1'",
-               radioButtons("de_method1","DE Method",choices=c("EdgeR","DESeq2","NOISeq"))
-             ),
-             conditionalPanel(
-               condition="input.n_rep=='0'",
-               radioButtons("de_method0","DE Method",choices=c("NOISeq"))
-             ),
-             h5("Choose 2 experiment conditions for DE analysis"),
-             selectInput("f1","Condition 1",choices = ""),
-             selectInput("f2","Condition 2",choices = ""),
-             
-             h5("DE criteria"),
-             splitLayout(
-               numericInput("p_val","FDR",min=0.01,max=1,value=0.05,step=0.01),
-               numericInput("fc","Fold Change",min=1,value=2,step=0.1)
-             ),
-             fluidRow(
-               column(4,
-                      actionButton("submit_DE","Submit")
-               ),
-               column(6,
-                      conditionalPanel(
-                        condition = "input.DE_tabs=='DE genes' ",
-                        downloadButton("download_de_table","Download table (csv)")
-                      ),
-                      conditionalPanel(
-                        condition = "input.DE_tabs=='Volcano plot' ",
-                        downloadButton("download_volcano","Download plot (PDF)")
-                      ),
-                      conditionalPanel(
-                        condition = "input.DE_tabs=='Dispersion plot' ",
-                        downloadButton("download_dispersion","Download plot (PDF)")
-                      )
-                      # conditionalPanel(
-                      #   condition = "input.DE_tabs=='Heatmap plot' ",
-                      #   downloadButton("download_heatmap","Download plot")
-                      # )
-               )
-             )
-             
-           ),
-           mainPanel(
-             tabsetPanel(type = "tabs", id= "DE_tabs",
-                         tabPanel("DE genes",
-                                  # h3("Differential Expression Analysis"),
-                                  conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                   div(img(src="load.gif",width=240,height=180),
-                                                       h4("Processing ... Please wait"),style="text-align: center;")
-                                  ), 
-                                  conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                   DT::dataTableOutput("DE_table")
-                                  )
-                         ),
-                         tabPanel("Volcano plot",    # for DESeq and edgeR
-                                  h6("Volcano plot is only available for edgeR and DESeq2 methods"),
-                                  conditionalPanel(
-                                    condition = "input.n_rep=='1' && input.method1!='NOISeq'",
-                                    conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                     div(img(src="load.gif",width=240,height=180),
-                                                         h4("Processing ... Please wait"),style="text-align: center;")
-                                    ), 
-                                    conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                     plotOutput("volcano_plot") 
-                                    )
-                                  ),
-                                  conditionalPanel(
-                                    condition = "input.method0=='NOISeq' || input.method1=='NOISeq'",
-                                    h6("Volcano Plot is only applicable to DESeq2 and edgeR")
-                                  )
-                         ),
-                         tabPanel("Dispersion plot", # for edgeR
-                                  h6("Dispersion plot is only available for edgeR and DESeq2 methods"),
-                                  conditionalPanel(
-                                    condition = "input.n_rep=='1' && input.method1!='NOISeq'",
-                                    # h3("Dispersion plot"),
-                                    conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                     div(img(src="load.gif",width=240,height=180),
-                                                         h4("Processing ... Please wait"),style="text-align: center;")
-                                    ), 
-                                    conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                     plotOutput("dispersion_plot")
-                                    )
-                                  ),
-                                  conditionalPanel(
-                                    condition = "input.method0=='NOISeq' || input.method1=='NOISeq'",
-                                    h6("Dispersion Plot is only applicable to DESeq2 and edgeR")
-                                  )
-                         )
-             )
-           )
-  ),
-  tabPanel('Heatmap',
-           sidebarPanel(
-             conditionalPanel(
-               condition = "input.heatmap_tabs=='Heatmap'",
-               
-               radioButtons("heatmap_de_ind",label="Choose data",choices=c("Indenpendent"="ind","DE result"="de")),
-               numericInput('numOfCluster',"Number of clusters on rows",value=2,min=2,max=30,step=1),
-               conditionalPanel(
-                 condition = "input.heatmap_de_ind == 'ind' ",
-                 # selectInput('numOfGeno',"Number of genotypes (mutants)",choices=c(1)),
-                 splitLayout(
-                   numericInput('fold',"Fold change",value=2,min=1,step=1),
-                   numericInput("fold_ncol", "min. column",value=2,min=1,step=1)
-                 )
-                 
-                 # uiOutput("refGeno"),
-                 # radioButtons('heatmap_value',"Values",
-                 #              c('Fold change','Log fold change'))
-               ),
-               
-               downloadButton("downloadheatmap","Download as PDF"),
-               actionButton('heatmap_plot',"Plot",width='65px',style="color: #fff; background-color: #337ab7; border-color: #337ab7;float:right")
-               
-               # conditionalPanel(
-               #   condition = "input.heatmap_de_ind == 'ind' ",
-               #   h5('Specify names of the genotypes'),
-               #   uiOutput("expand_genonames")
-               # )
-             ),
-             
-             conditionalPanel(
-               condition = "input.heatmap_tabs=='Gene clusters'",
-               uiOutput("heatmap_display"),
-               conditionalPanel(
-                 condition = "input.display_cluster=='ALL'",
-                 downloadButton("downloadclusters","Download as CSV")
-               )
-             )
-             
-           ),
-           mainPanel(
-             tabsetPanel(type = "tabs",id="heatmap_tabs",
-                         tabPanel("Heatmap", 
-                                  conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                   div(img(src="load.gif",width=240,height=180),
-                                                       h4("Processing ... Please wait"),style="text-align: center;")
-                                  ), 
-                                  conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                   plotOutput("heatmap.plot")
-                                  )),
-                         tabPanel("Gene clusters", dataTableOutput('cluster.info'))
-             )
-           )),
-  
-  ######## NOISE ######
-  #############################################
-  tabPanel('Noise',
-           sidebarPanel(
-             radioButtons('noise_situation',"Select desired noise plot between",choices = c('replicates'='a','genotypes (average of replicates)'='b','genotypes (no replicate)'='c')),
-             conditionalPanel(
-               condition = "input.noise_situation=='a' | input.noise_situation=='b' ",
-               textInput('noise_numOfRep',"Number of replicates",value=1),
-               helpText("* Please order the sample columns in input file properly. Replicates of the same genotype should be put in adjacent columns.")
-             ),
-             conditionalPanel(
-               condition = "input.noise_situation=='b'",
-               uiOutput("noise_anchor_choices")
-             ),
-             conditionalPanel(
-               condition = "input.noise_situation=='c'",
-               selectInput('noise_anchor_c',"Anchor genotype",choices = "")
-             ),
-             radioButtons('noise_graph_type',"Graph type:",
-                          c('Bar chart','Line chart')),
-             downloadButton("downloadnoise","Download as PNG"),
-             actionButton('noise_plot',"Plot",width='65px',style="color: #fff; background-color: #337ab7; border-color:#337ab7;float:right"),
-             conditionalPanel(
-               condition = "input.noise_situation=='a' | input.noise_situation=='b' ",
-               h5("Specify names of the genotypes"),
-               uiOutput("expand_genonames_noise")
-             )
-           ),
-           mainPanel(
-             conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                              div(img(src="load.gif",width=240,height=180),h4("Processing ... Please wait"), style="text-align: center;")
-             ), 
-             conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                              plotlyOutput('noise.plot')
-             )
-           )),
-  
-  
-  ###### ENTROPY #############
-  #########################################
-  tabPanel('Entropy',
-           sidebarPanel(
-             checkboxInput('tsflag',strong("Time series data"),FALSE),
-             conditionalPanel(
-               condition = "input.tsflag==true",
-               textInput('entropy_timepoints',"Number of time points"),
-               helpText("* Please order the sample columns in input file properly. Time series data of the same genotype should be put in adjacent columns.")
-             ),
-             radioButtons('entropy_graph_type',"Graph type:",
-                          c('Bar chart','Line chart')),
-             downloadButton("downloadentropy","Download as PNG"),
-             conditionalPanel(
-               condition = "input.tsflag==true",
-               h5("Specify names of the genotypes"),
-               uiOutput("expand_genonames_entropy")
-             )
-           ),
-           mainPanel(
-             h3('Shannon entropy'),
-             plotlyOutput('entropy.plot')
-           )
-  ),
-  
-  
-  ################## GO analysis ###################
-  ##################################################
-  tabPanel("GO Analysis",
-           # useShinyjs(),
-           sidebarPanel(
-             conditionalPanel(
-               condition = "input.go_tab == 'go_table' || input.go_tab == 'go_pie' ",
-               helpText("* One-column csv file"),
-               fileInput("filego","Upload list of DE genes"),
-               fileInput("filebg","List of background genes"),
-               selectInput("go_method","Select GO package", choices = c("clusterProfiler","GOstats","enrichR")), #new
-               conditionalPanel(
-                 condition = "input.go_method=='clusterProfiler' || input.go_method=='GOstats'",
-                 # update if enrichR
-                 selectInput('go_species',"Select species",selected="org.EcK12.eg.db",choices=c("Homo sapiens"='org.Hs.eg.db',"Mus musculus"='org.Mm.eg.db',"Rattus norvegicus"='org.Rn.eg.db',"Gallus gallus"='org.Gg.eg.db',"Danio rerio"='org.Dr.eg.db',"Drosophila melanogaster"='org.Dm.eg.db',"Caenorhabditis elegans"='org.Ce.eg.db',"Saccharomyces cereviasiae"='org.Sc.sgd.db',"Arabidopsis thaliana"='org.At.tair.db',"Escherichia coli (strain K12)"='org.EcK12.eg.db',"Escherichia coli (strain Sakai)"='org.EcSakai.eg.db',"Anopheles gambiae"='org.Ag.eg.db',"Bos taurus"='org.Bt.eg.db',"Canis familiaris"='org.Cf.eg.db',"Macaca mulatta"='org.Mmu.eg.db',"Plasmodium falciparum"='org.Pf.plasmo.db',"Pan troglodytes"='org.Pt.eg.db',"Sus scrofa"='org.Ss.eg.db',"Xenopus tropicalis"='org.Xl.eg.db')), # species.choices
-                 selectInput('go_geneidtype',"Select identifier",choices=NULL),
-                 selectInput('subontology',"Select subontology",selected="BP",choices = c("biological process"="BP","molecular function"="MF","cellular component"="CC")),
-                 numericInput("go_max_p","Adjusted p cutoff",value=0.05,min=0,max=1, step=0.05)
-                 # selectInput('go_level',"Select level",choices = c(2:10))
-               ), conditionalPanel(
-                 condition = "input.go_method == 'enrichR'",
-                 selectInput('enrichR_dbs',"Select database",choices=enrichRdbs)
-               ),
-               numericInput("go_min_no","Min. number of genes",value=3,min=1,step=1),
-               br(),
-               fluidRow(
-                 column(4,
-                        actionButton("submit_go","Submit")
-                 ),
-                 conditionalPanel(
-                   condition = "input.go_tab == 'go_table' ",
-                   column(7,
-                          downloadButton("download_go_table","Save CSV")
-                   )
-                 ),
-                 conditionalPanel(
-                   condition = "input.go_tab == 'go_pie' ",
-                   column(7,
-                          downloadButton("download_go_pie","Save PNG")
-                   )
-                 )
-               )
-             ),
-             conditionalPanel(
-               condition = "input.go_tab == 'go_graph'",
-               selectInput("go_term_slect","Select GO terms",choices="",multiple=T),
-               checkboxInput("show_gene_names","Show gene names", value = F),
-               actionButton("submit_go_graph","Submit"),
-               br(),
-               fluidRow(
-                 column(5,
-                        br(),
-                        radioButtons("download_go_graph_type","File Type",choices=c("png","pdf"))
-                 ),
-                 column(6,
-                        br(),
-                        br(),
-                        downloadButton("download_go_graph","Save Graph")
-                 )
-               )
-             )
-           ),
-           mainPanel(
-             tabsetPanel(type = "tabs", id = "go_tab",
-                         tabPanel("go_table",
-                                  conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                   div(img(src="load.gif",width=240,height=180),
-                                                       h4("Processing ... Please wait"),style="text-align: center;")
-                                  ), 
-                                  conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                   DT::dataTableOutput("go_table")
-                                  )
-                         ),
-                         tabPanel("go_pie",
-                                  conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                   div(img(src="load.gif",width=240,height=180),
-                                                       h4("Processing ... Please wait"),style="text-align: center;")
-                                  ), 
-                                  conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                   h6("Pie chart is only available for clusterProfiler or GOstats method"),
-                                                   h4("Relative size of GO terms level 2"),
-                                                   plotlyOutput("go_pie")
-                                  )
-                         ),
-                         tabPanel("go_graph",
-                                  h6("Graph visualization is only available for clusterProfiler method"),
-                                  conditionalPanel(condition="$('html').hasClass('shiny-busy')",
-                                                   div(img(src="load.gif",width=240,height=180),
-                                                       h4("Processing ... Please wait"),style="text-align: center;")
-                                  ), 
-                                  conditionalPanel(condition="!$('html').hasClass('shiny-busy')",
-                                                   plotOutput("go_graph") 
-                                  )
-                         )
-             )
-           )
-  )
-)
-  ####################################################
+
+
 
 server <- function(input,output,session){
   
@@ -2702,5 +2625,3 @@ server <- function(input,output,session){
   
   #session$onSessionEnded(stopApp)
 }
-
-shinyApp(ui,server)
