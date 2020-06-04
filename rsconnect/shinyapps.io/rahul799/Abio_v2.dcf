@@ -5,9 +5,9 @@ account: rahul799
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 2274675
-bundleId: 3128028
+bundleId: 3136106
 url: https://rahul799.shinyapps.io/Abio_v2/
-when: 1589125040.74179
+when: 1589274826.89995
 asMultiple: FALSE
 asStatic: FALSE
 ignoredFiles: README.md|www/.Rhistory|www/Abiotrans-logo.png|www/enrichRdbs.csv|www/load.gif|Test data
