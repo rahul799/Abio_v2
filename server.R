@@ -574,8 +574,8 @@ server <- function(input, output, session) {
     updateSliderInput(session, "pca_cluster_num", max = col_num - 1)
     genotype_num <- NULL
     if (is.null(DS) == FALSE) {
-      for (i in 2:col_num) {
-        if (col_num %% i == 0) {
+      for (i in 2:col_num) { //forloop
+        if (col_num %% i == 0) {    
           genotype_num <- c(genotype_num, i)
         }
       }
@@ -589,7 +589,7 @@ server <- function(input, output, session) {
     if (is.null(f)) {
       hideTab(inputId = "preprocessing_tabs", target = "Description table")
       # hideTab(inputId="preprocessing_tabs", target="Description table")
-    } else {
+    } else {     //else statement
       showTab(inputId = "preprocessing_tabs", target = "Description table")
       updateSelectInput(session, "f1", choices = f, selected = f[1])
       updateSelectInput(session, "f2", choices = f, selected = f[2])
@@ -609,7 +609,7 @@ server <- function(input, output, session) {
     # print("line 647 check input$submit_preprocessing")
     # v=input$submit_preprocessing
     if (input$submit_preprocessing > 0) {
-      if (type == "norm") {
+      if (type == "norm") {  //if statement
         DS_filt <- df_shiny()
       } else if (type == "raw") {
         DS_filt <- df_raw_shiny()
@@ -625,7 +625,7 @@ server <- function(input, output, session) {
       samplesize <- c(samplesize, i * min_size)
       i <- i * 2
     }
-    if (is.null(samplesize)) {
+    if (is.null(samplesize)) {  //if statement 
       samplesize <- c(samplesize, length(DS_filt[, 1]))
     } else if (samplesize[length(samplesize)] != length(DS_filt[, 1])) {
       samplesize <- c(samplesize, length(DS_filt[, 1]))
@@ -805,7 +805,7 @@ server <- function(input, output, session) {
           title = "Error",
           "Please check normalised data file format (Eg_normalised.png) and try again!"
         ))
-        return(NULL)
+        return(NULL)   //return
       }
     }
     return(DS)
