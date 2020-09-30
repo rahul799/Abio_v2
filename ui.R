@@ -62,7 +62,7 @@ ui <- navbarPage(
           c(
             "None (Black)" = "None",
             "RPKM (Blue)" = "RPKM", "FPKM (Dark cyan)" = "FPKM",
-            "TPM (Dark green)" = "TPM",
+            "TPM (Dark blue)" = "TPM",
             "RUV (Brown)" = "RUV"
           )
         )
@@ -151,8 +151,8 @@ ui <- navbarPage(
         conditionalPanel(
           condition = "input.dist_zoom=='slider'",
           sliderInput("dist_range", "Range:",
-            min = 0.1, max = 1000, step = 1,
-            value = c(0.1, 1000)
+            min = 0.1, max = 2000, step = 1,
+            value = c(0.1, 2000)
           )
         ),
         conditionalPanel(
