@@ -531,9 +531,9 @@ list2df <- function(inputList) {
 }
 
 havingIP <- function() {
-  if (.Platform$OS.type == "windows") {
+  if (.Platform$OS.type == "windows") {  //ifstatement
     ipmessage <- system("ipconfig", intern = TRUE)
-  } else {
+  } else {                               //elsestatement
     ipmessage <- system("ifconfig", intern = TRUE)
   }
   validIP <- "((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)[.]){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
@@ -561,9 +561,9 @@ server <- function(input, output, session) {
 
   observe({
     type <- input$file_type
-    if (type == "norm") {
+    if (type == "norm") {      //ifstatement
       DS <- df_norm()
-    } else if (type == "raw") {
+    } else if (type == "raw") {  //elsestatement
       DS <- df_raw()
     }
     nms <- colnames(DS)
@@ -621,7 +621,7 @@ server <- function(input, output, session) {
     i <- 1
     min_size <- 25
     samplesize <- NULL
-    while (i * min_size < length(DS_filt[, 1])) {
+    while (i * min_size < length(DS_filt[, 1])) {   //length
       samplesize <- c(samplesize, i * min_size)
       i <- i * 2
     }
