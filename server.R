@@ -129,7 +129,7 @@ fpkm <- function(counts, lengths) {
 }
 ######### FOR DE ANALYSIS #######################3
 ################################################# 3
-
+#html #css
 edgerApply <- function(DS, f, W_1 = NULL, f1, f2) {
   # W_1 calculated by RUVg with spikes (negative control genes)
   if (length(W_1) != length(f)) {
